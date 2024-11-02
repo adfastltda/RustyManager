@@ -110,7 +110,7 @@ else
     # ---->>>> Instalar o RustyManager
     show_progress "Compilando RustyManager, isso pode levar bastante tempo dependendo da maquina..."
     mkdir -p /opt/rustymanager
-    git clone --branch "$SCRIPT_VERSION" --recurse-submodules --single-branch https://github.com/UlekBR/RustyManager.git /root/RustyManager > /dev/null 2>&1 || error_exit "Falha ao clonar RustyManager"
+    git clone --branch "$SCRIPT_VERSION" --recurse-submodules --single-branch https://github.com/adfastltda/RustyManager.git /root/RustyManager > /dev/null 2>&1 || error_exit "Falha ao clonar RustyManager"
 
     cd /root/RustyManager/
     cargo build --release --jobs $(nproc) > /dev/null 2>&1 || error_exit "Falha ao compilar RustyManager"
@@ -138,9 +138,9 @@ else
     # ---->>>> Instalando STunnel
     show_progress "Instalando STunnel..."
     apt-get install -y stunnel4 > /dev/null 2>&1 || error_exit "Falha ao instalar STunnel"
-    wget -O /etc/stunnel/cert.pem https://raw.githubusercontent.com/UlekBR/RustyManager/refs/heads/$SCRIPT_VERSION/Utils/stunnel/cert.pem > /dev/null 2>&1 || error_exit "Falha ao baixar cert.pem"
-    wget -O /etc/stunnel/key.pem https://raw.githubusercontent.com/UlekBR/RustyManager/refs/heads/$SCRIPT_VERSION/Utils/stunnel/key.pem > /dev/null 2>&1 || error_exit "Falha ao baixar key.pem"
-    wget -O /etc/stunnel/stunnel.conf https://raw.githubusercontent.com/UlekBR/RustyManager/refs/heads/$SCRIPT_VERSION/Utils/stunnel/conf > /dev/null 2>&1 || error_exit "Falha ao baixar config"
+    wget -O /etc/stunnel/cert.pem https://raw.githubusercontent.com/adfastltda/RustyManager/refs/heads/$SCRIPT_VERSION/Utils/stunnel/cert.pem > /dev/null 2>&1 || error_exit "Falha ao baixar cert.pem"
+    wget -O /etc/stunnel/key.pem https://raw.githubusercontent.com/adfastltda/RustyManager/refs/heads/$SCRIPT_VERSION/Utils/stunnel/key.pem > /dev/null 2>&1 || error_exit "Falha ao baixar key.pem"
+    wget -O /etc/stunnel/stunnel.conf https://raw.githubusercontent.com/adfastltda/RustyManager/refs/heads/$SCRIPT_VERSION/Utils/stunnel/conf > /dev/null 2>&1 || error_exit "Falha ao baixar config"
     sed -i 's/ENABLED=0/ENABLED=1/g' /etc/default/stunnel4 || error_exit "Falha ao configurar STunnel"
     systemctl stop stunnel4 > /dev/null 2>&1
     systemctl disable stunnel4 > /dev/null 2>&1
