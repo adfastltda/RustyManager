@@ -107,7 +107,7 @@ increment_step
 
 # Clona e compila o projeto Rust
 show_progress "Clonando e compilando o RustyManager..."
-SCRIPT_VERSION="main" # Define a branch
+SCRIPT_VERSION="beta" # Define a branch
 git clone --branch "$SCRIPT_VERSION" --recurse-submodules --single-branch https://github.com/adfastltda/RustyManager.git /opt/rustymanager/source  || error_exit "Falha ao clonar o repositório."
 cd /opt/rustymanager/source
 cargo build --release --jobs $(nproc)  || error_exit "Falha ao compilar o projeto."
