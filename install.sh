@@ -1,18 +1,17 @@
 #!/bin/bash
-# RustyManager Installer
+# RustyManager Installer - Enhanced Version
 
-set -e
-
-TOTAL_STEPS=15
+set -e # Sai imediatamente em caso de erro
+TOTAL_STEPS=16
 CURRENT_STEP=0
 
 show_progress() {
-    PERCENT=$((CURRENT_STEP * 100 / TOTAL_STEPS))
-    echo "Progresso: [${PERCENT}%] - $1"
+    local percent=$((CURRENT_STEP * 100 / TOTAL_STEPS))
+    echo -e "\e[36m[${percent}%]\e[0m - $1"
 }
 
 error_exit() {
-    echo -e "\nErro: $1"
+    echo -e "\n\e[31mErro:\e[0m $1" >&2
     exit 1
 }
 
@@ -20,81 +19,66 @@ increment_step() {
     CURRENT_STEP=$((CURRENT_STEP + 1))
 }
 
-check_command() {
-    if ! command -v "$1" &> /dev/null; then
-        return 1
-    else
-        return 0
-    fi
-}
-install_system_packages() {
-    show_progress "Atualizando repositorios..."
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -y > update.log 2>&1
-    if [ "$?" -ne 0 ]; then
-        error_exit "Falha ao atualizar os repositorios"
-    fi
-    increment_step
+# Checa se está sendo executado como root
+if [ "$EUID" -ne 0 ]; then
+    error_exit "Este script deve ser executado como root."
+fi
 
-    show_progress "Verificando o sistema..."
-    if ! check_command lsb_release; then
-        apt-get install lsb-release -y > install_lsb.log 2>&1
-        if [ "$?" -ne 0 ]; then
-            error_exit "Falha ao instalar lsb-release"
-        fi
-    fi
-    increment_step
+clear
+show_progress "Inicializando a instalação..."
+export DEBIAN_FRONTEND=noninteractive
+increment_step
 
-     OS_NAME=$(lsb_release -is)
-    VERSION=$(lsb_release -rs)
+# Atualiza o sistema
+show_progress "Atualizando repositórios e pacotes do sistema..."
+apt-get update -y > /dev/null 2>&1 || error_exit "Falha ao atualizar os repositórios."
+apt-get upgrade -y > /dev/null 2>&1 || error_exit "Falha ao atualizar o sistema."
+increment_step
 
-    case $OS_NAME in
-        Ubuntu)
-            case $VERSION in
-                24.*|22.*|20.*|18.*)
-                    show_progress "Sistema Ubuntu suportado, continuando..."
-                    ;;
-                *)
-                    error_exit "Versão do Ubuntu não suportada. Use 18, 20, 22 ou 24."
-                    ;;
-            esac
-            ;;
-        Debian)
-            case $VERSION in
-                12*|11*|10*|9*)
-                    show_progress "Sistema Debian suportado, continuando..."
-                    ;;
-                *)
-                    error_exit "Versão do Debian não suportada. Use 9, 10, 11 ou 12."
-                    ;;
-            esac
-            ;;
-        *)
-            error_exit "Sistema não suportado. Use Ubuntu ou Debian."
-            ;;
-    esac
-    increment_step
+# Instala dependências
+show_progress "Instalando dependências..."
+apt-get install -y gnupg curl build-essential git cmake sysstat net-tools sqlite3 libsqlite3-dev wget htop > /dev/null 2>&1 || error_exit "Falha ao instalar pacotes essenciais."
+increment_step
 
-    show_progress "Atualizando o sistema..."
-    apt-get upgrade -y > upgrade.log 2>&1
-    if [ "$?" -ne 0 ]; then
-        error_exit "Falha ao atualizar o sistema"
-    fi
-    
-    apt-get install gnupg curl build-essential git cmake sysstat net-tools sqlite3 libsqlite3-dev -y > install_packages.log 2>&1
-        if [ "$?" -ne 0 ]; then
-           error_exit "Falha ao instalar pacotes"
-        fi
-    increment_step
-}
-setup_directories() {
-    show_progress "Criando diretorio /opt/rustymanager..."
-     mkdir -p /opt/rustymanager
-     increment_step
-}
-setup_database() {
-    show_progress "Configurando o banco de dados..."
-    sqlite3 /opt/rustymanager/db "
+# Detecta sistema operacional e versão
+show_progress "Detectando sistema operacional..."
+OS_NAME=$(lsb_release -is)
+VERSION=$(lsb_release -rs)
+case $OS_NAME in
+    Ubuntu)
+        case $VERSION in
+            24.*|22.*|20.*|18.*)
+                echo "Ubuntu version supported."
+                ;;
+            *)
+                 error_exit "Versão do Ubuntu não suportada. Use 18, 20, 22 ou 24."
+                 ;;
+        esac
+        ;;
+    Debian)
+        case $VERSION in
+            12*|11*|10*|9*)
+                 echo "Debian version supported."
+                 ;;
+            *)
+                error_exit "Versão do Debian não suportada. Use 9, 10, 11 ou 12."
+                ;;
+        esac
+        ;;
+    *)
+        error_exit "Sistema operacional não suportado. Use Ubuntu ou Debian."
+        ;;
+esac
+increment_step
+
+# Cria diretório
+show_progress "Criando diretório de instalação /opt/rustymanager..."
+mkdir -p /opt/rustymanager || error_exit "Falha ao criar diretório de instalação."
+increment_step
+
+# Configura banco de dados SQLite
+show_progress "Configurando banco de dados..."
+sqlite3 /opt/rustymanager/db "
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY,
         login_type TEXT NOT NULL,
@@ -110,139 +94,69 @@ setup_database() {
         badvpn_ports TEXT,
         checkuser_ports TEXT
     );
-    "
-     if [ "$?" -ne 0 ]; then
-        error_exit "Falha ao configurar o banco de dados"
-    fi
-    increment_step
-}
+" || error_exit "Falha ao criar tabelas no banco de dados."
+increment_step
 
-install_rust() {
-    show_progress "Instalando Rust..."
-     if ! check_command rustc; then
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y > install_rust.log 2>&1
-        if [ "$?" -ne 0 ]; then
-            error_exit "Falha ao instalar Rust"
-        fi
-        source "$HOME/.cargo/env"
-    fi
-    increment_step
-}
-install_rustymanager() {
-    show_progress "Compilando RustyManager, isso pode levar bastante tempo dependendo da maquina..."
-    mkdir -p /opt/rustymanager
-    git clone --branch "$SCRIPT_VERSION" --recurse-submodules --single-branch https://github.com/adfastltda/RustyManager.git /root/RustyManager > clone_rustymanager.log 2>&1
-    if [ "$?" -ne 0 ]; then
-        error_exit "Falha ao clonar RustyManager"
-    fi
-
-    cd /root/RustyManager/
-    cargo build --release --jobs $(nproc) > build_rustymanager.log 2>&1
-    if [ "$?" -ne 0 ]; then
-        error_exit "Falha ao compilar RustyManager"
-    fi
-    cp ./target/release/SshScript /opt/rustymanager/manager
-    cp ./target/release/CheckUser /opt/rustymanager/checkuser
-    cp ./target/release/RustyProxy /opt/rustymanager/rustyproxy
-    cp ./target/release/ConnectionsManager /opt/rustymanager/connectionsmanager
-    increment_step
-}
-compile_badvpn(){
-    show_progress "Compilando BadVPN..."
-    mkdir -p /root/RustyManager/BadVpn/badvpn/badvpn-build
-    cd /root/RustyManager/BadVpn/badvpn/badvpn-build
-    cmake .. -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 > cmake_badvpn.log 2>&1
-        if [ "$?" -ne 0 ]; then
-            error_exit "Falha ao configurar cmake para BadVPN"
-        fi
-    make -j$(nproc) > make_badvpn.log 2>&1
-     if [ "$?" -ne 0 ]; then
-        error_exit "Falha ao compilar BadVPN"
-    fi
-    mv udpgw/badvpn-udpgw /opt/rustymanager/badvpn
-    increment_step
-}
-setup_permissions(){
-    show_progress "Configurando permissões..."
-    chmod +x /opt/rustymanager/{manager,proxy,connectionsmanager,checkuser,badvpn}
-    ln -s /opt/rustymanager/manager /usr/local/bin/menu
-    increment_step
-}
-install_stunnel(){
-    show_progress "Instalando STunnel..."
-    apt-get install -y stunnel4 > install_stunnel.log 2>&1
-     if [ "$?" -ne 0 ]; then
-       error_exit "Falha ao instalar STunnel"
-    fi
-    curl -o /etc/stunnel/cert.pem https://raw.githubusercontent.com/adfastltda/RustyManager/refs/heads/$SCRIPT_VERSION/Utils/stunnel/cert.pem > download_cert.log 2>&1
-     if [ "$?" -ne 0 ]; then
-       error_exit "Falha ao baixar cert.pem"
-    fi
-    curl -o /etc/stunnel/key.pem https://raw.githubusercontent.com/adfastltda/RustyManager/refs/heads/$SCRIPT_VERSION/Utils/stunnel/key.pem > download_key.log 2>&1
-     if [ "$?" -ne 0 ]; then
-        error_exit "Falha ao baixar key.pem"
-    fi
-    curl -o /etc/stunnel/stunnel.conf https://raw.githubusercontent.com/adfastltda/RustyManager/refs/heads/$SCRIPT_VERSION/Utils/stunnel/conf > download_conf.log 2>&1
-     if [ "$?" -ne 0 ]; then
-        error_exit "Falha ao baixar config"
-    fi
-
-    sed -i 's/ENABLED=0/ENABLED=1/g' /etc/default/stunnel4 || error_exit "Falha ao configurar STunnel"
-    systemctl is-active stunnel4 > /dev/null 2>&1
-    if [ "$?" -eq 0 ]; then
-        systemctl stop stunnel4 > stop_stunnel.log 2>&1
-        if [ "$?" -ne 0 ]; then
-            error_exit "Falha ao parar stunnel"
-        fi
-        systemctl disable stunnel4 > disable_stunnel.log 2>&1
-        if [ "$?" -ne 0 ]; then
-             error_exit "Falha ao desabilitar stunnel"
-        fi
-    fi
-    increment_step
-}
-install_speedtest() {
-    show_progress "Instalando Speedtest..."
-    curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh > speedtest_script.sh
-    bash speedtest_script.sh > install_speedtest_script.log 2>&1
-    if [ "$?" -ne 0 ]; then
-        error_exit "Falha ao baixar e instalar o script do speedtest"
-    fi
-    apt-get install -y speedtest > install_speedtest.log 2>&1
-      if [ "$?" -ne 0 ]; then
-        error_exit "Falha ao instalar o speedtest"
-    fi
-    increment_step
-}
-install_htop(){
-    show_progress "Instalando monitor de recursos..."
-    apt-get install -y htop > install_htop.log 2>&1
-     if [ "$?" -ne 0 ]; then
-       error_exit "Falha ao instalar o speedtest"
-    fi
-    increment_step
-}
-cleanup_temp(){
-    show_progress "Limpando diretórios temporários..."
-    rm -rf /root/RustyManager/
-    increment_step
-}
-# ---->>>> Main script
-if [ "$EUID" -ne 0 ]; then
-    error_exit "EXECUTE COMO ROOT"
-else
-    clear
-    install_system_packages
-    setup_directories
-    setup_database
-    install_rust
-    install_rustymanager
-    compile_badvpn
-    setup_permissions
-    install_stunnel
-    install_speedtest
-    install_htop
-    cleanup_temp
-
-    echo "Instalação concluída com sucesso. digite 'menu' para acessar o menu."
+# Instala Rust
+show_progress "Instalando Rust..."
+if ! command -v rustc &> /dev/null; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y > /dev/null 2>&1 || error_exit "Falha ao instalar Rust."
+    . "$HOME/.cargo/env"
 fi
+increment_step
+
+# Clona e compila o projeto Rust
+show_progress "Clonando e compilando o RustyManager..."
+SCRIPT_VERSION="main" # Define a branch
+git clone --branch "$SCRIPT_VERSION" --recurse-submodules --single-branch https://github.com/adfastltda/RustyManager.git /opt/rustymanager/source  || error_exit "Falha ao clonar o repositório."
+cd /opt/rustymanager/source
+cargo build --release --jobs $(nproc)  || error_exit "Falha ao compilar o projeto."
+increment_step
+
+# Instala os binarios rust
+show_progress "Instalando binários Rust..."
+mv ./target/release/SshScript /opt/rustymanager/manager
+mv ./target/release/CheckUser /opt/rustymanager/checkuser
+mv ./target/release/RustyProxy /opt/rustymanager/rustyproxy
+mv ./target/release/ConnectionsManager /opt/rustymanager/connectionsmanager
+increment_step
+
+# Compila BadVPN
+show_progress "Compilando BadVPN..."
+mkdir -p /opt/rustymanager/source/BadVpn/badvpn/badvpn-build
+cd /opt/rustymanager/source/BadVpn/badvpn/badvpn-build
+cmake .. -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 || error_exit "Falha ao configurar o cmake para BadVPN."
+make || error_exit "Falha ao compilar BadVPN."
+mv udpgw/badvpn-udpgw /opt/rustymanager/badvpn
+increment_step
+
+# Configura permissões e symlink
+show_progress "Configurando permissões e links..."
+chmod +x /opt/rustymanager/{manager,checkuser,rustyproxy,connectionsmanager,badvpn}
+ln -sf /opt/rustymanager/manager /usr/local/bin/menu || error_exit "Falha ao criar o symlink para o menu."
+increment_step
+
+# Instala e configura Stunnel
+show_progress "Instalando e configurando STunnel..."
+apt-get install -y stunnel4 || error_exit "Falha ao instalar STunnel."
+wget -O /etc/stunnel/cert.pem "https://raw.githubusercontent.com/adfastltda/RustyManager/refs/heads/$SCRIPT_VERSION/Utils/stunnel/cert.pem" || error_exit "Falha ao baixar o cert.pem."
+wget -O /etc/stunnel/key.pem "https://raw.githubusercontent.com/adfastltda/RustyManager/refs/heads/$SCRIPT_VERSION/Utils/stunnel/key.pem"  || error_exit "Falha ao baixar o key.pem."
+wget -O /etc/stunnel/stunnel.conf "https://raw.githubusercontent.com/adfastltda/RustyManager/refs/heads/$SCRIPT_VERSION/Utils/stunnel/conf"  || error_exit "Falha ao baixar a configuração do stunnel."
+sed -i 's/ENABLED=0/ENABLED=1/g' /etc/default/stunnel4 || error_exit "Falha ao habilitar STunnel."
+systemctl stop stunnel4 > /dev/null 2>&1
+systemctl disable stunnel4 > /dev/null 2>&1
+increment_step
+
+# Instala speedtest
+show_progress "Instalando Speedtest CLI..."
+curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash > /dev/null 2>&1 || error_exit "Falha ao adicionar repositório do Speedtest."
+apt-get install -y speedtest > /dev/null 2>&1 || error_exit "Falha ao instalar Speedtest."
+increment_step
+
+# Limpeza
+show_progress "Limpando diretórios temporários..."
+rm -rf /opt/rustymanager/source
+increment_step
+
+echo -e "\n\e[32mInstalação concluída com sucesso!\e[0m"
+echo "Digite 'menu' para acessar o menu do RustyManager."
