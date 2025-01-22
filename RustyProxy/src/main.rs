@@ -1,120 +1,112 @@
-use std::io::{Error, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::mpsc;
-use std::time::Duration;
-use std::{env, thread};
+use std::env;
+use std::io::Error;
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<(), Error> {
     // Iniciando o proxy
     let port = get_port();
-    let listener = TcpListener::bind(format!("[::]:{}", port)).unwrap();
+    let listener = TcpListener::bind(format!("[::]:{}", port)).await?;
     println!("Iniciando serviço na porta: {}", port);
-    start_http(listener);
+    start_http(listener).await;
+    Ok(())
 }
 
-fn start_http(listener: TcpListener) {
-    for stream in listener.incoming() {
-        match stream {
-            Ok(mut client_stream) => {
-                thread::spawn(move || {
-                    handle_client(&mut client_stream);
+async fn start_http(listener: TcpListener) {
+    loop {
+        match listener.accept().await {
+            Ok((client_stream, _)) => {
+                tokio::spawn(async move {
+                    if let Err(e) = handle_client(client_stream).await {
+                        eprintln!("Erro ao processar cliente: {}", e);
+                    }
                 });
             }
             Err(e) => {
-                eprintln!("Error accepting connection: {}", e);
+                eprintln!("Erro ao aceitar conexão: {}", e);
             }
         }
     }
 }
 
-fn handle_client(client_stream: &mut TcpStream) {
+async fn handle_client(mut client_stream: TcpStream) -> Result<(), Error> {
     let status = get_status();
-    if client_stream.write_all(format!("HTTP/1.1 101 {}\r\n\r\n", status).as_bytes()).is_err() {
-        return;
-    }
+    client_stream
+        .write_all(format!("HTTP/1.1 101 {}\r\n\r\n", status).as_bytes())
+        .await?;
 
-    match peek_stream(&client_stream) {
-        Ok(data_str) => {
-            if data_str.contains("HTTP") {
-                let _ = client_stream.read(&mut vec![0; 1024]);
-                let payload_str = data_str.to_lowercase();
-                if payload_str.contains("websocket") || payload_str.contains("ws") {
-                    if client_stream.write_all(format!("HTTP/1.1 200 {}\r\n\r\n", status).as_bytes()).is_err() {
-                        return;
-                    }
-                }
+    if let Ok(data_str) = peek_stream(&client_stream).await {
+        if data_str.contains("HTTP") {
+            let mut buffer = vec![0; 1024];
+            client_stream.read(&mut buffer).await?;
+            let payload_str = data_str.to_lowercase();
+            if payload_str.contains("websocket") || payload_str.contains("ws") {
+                client_stream
+                    .write_all(format!("HTTP/1.1 200 {}\r\n\r\n", status).as_bytes())
+                    .await?;
             }
         }
-        Err(..) => return,
     }
-
 
     let mut addr_proxy = "0.0.0.0:22";
 
-    let (tx, rx) = mpsc::channel();
-
-    let clone_client = client_stream.try_clone().unwrap();
-    let read_handle = thread::spawn(move || {
-        let result = peek_stream(&clone_client);
-        tx.send(result).ok();
-    });
-
-    let read_result = rx.recv_timeout(Duration::from_secs(1));
-
-    match read_result {
-        Ok(Ok(data_str)) => {
-            if !data_str.contains("SSH") {
-                addr_proxy = "0.0.0.0:1194";
-            }
-        }
-        Ok(Err(_)) | Err(mpsc::RecvTimeoutError::Timeout) => {
-            read_handle.thread().unpark()
-        }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            read_handle.thread().unpark()
+    if let Ok(data_str) = peek_stream(&client_stream).await {
+        if !data_str.contains("SSH") {
+            addr_proxy = "0.0.0.0:1194";
         }
     }
-    let _ = read_handle.thread();
 
-
-    let server_connect = TcpStream::connect(&addr_proxy);
+    let server_connect = TcpStream::connect(addr_proxy).await;
     if server_connect.is_err() {
-        return;
+        return Ok(());
     }
 
     let server_stream = server_connect.unwrap();
 
-    let (mut client_read, mut client_write) = (client_stream.try_clone().unwrap(), client_stream.try_clone().unwrap());
-    let (mut server_read, mut server_write) = (server_stream.try_clone().unwrap(), server_stream);
+    let (client_read, client_write) = client_stream.into_split();
+    let (server_read, server_write) = server_stream.into_split();
 
-    thread::spawn(move || {
-        transfer_data(&mut client_read, &mut server_write);
-    });
+    let client_read = Arc::new(Mutex::new(client_read));
+    let client_write = Arc::new(Mutex::new(client_write));
+    let server_read = Arc::new(Mutex::new(server_read));
+    let server_write = Arc::new(Mutex::new(server_write));
 
-    thread::spawn(move || {
-        transfer_data(&mut server_read, &mut client_write);
-    });
+    let client_to_server = transfer_data(client_read, server_write);
+    let server_to_client = transfer_data(server_read, client_write);
+
+    tokio::try_join!(client_to_server, server_to_client)?;
+
+    Ok(())
 }
 
-fn transfer_data(read_stream: &mut TcpStream, write_stream: &mut TcpStream) {
+async fn transfer_data(
+    read_stream: Arc<Mutex<tokio::net::tcp::OwnedReadHalf>>,
+    write_stream: Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>,
+) -> Result<(), Error> {
     let mut buffer = [0; 2048];
     loop {
-        match read_stream.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(n) => {
-                if write_stream.write_all(&buffer[..n]).is_err() {
-                    break;
-                }
-            }
-            Err(_) => break,
+        let bytes_read = {
+            let mut read_guard = read_stream.lock().await;
+            read_guard.read(&mut buffer).await?
+        };
+
+        if bytes_read == 0 {
+            break;
         }
+
+        let mut write_guard = write_stream.lock().await;
+        write_guard.write_all(&buffer[..bytes_read]).await?;
     }
-    write_stream.shutdown(Shutdown::Both).ok();
+
+    Ok(())
 }
 
-fn peek_stream(read_stream: &TcpStream) -> Result<String, Error> {
+async fn peek_stream(stream: &TcpStream) -> Result<String, Error> {
     let mut peek_buffer = vec![0; 1024];
-    let bytes_peeked = read_stream.peek(&mut peek_buffer)?;
+    let bytes_peeked = stream.peek(&mut peek_buffer).await?;
     let data = &peek_buffer[..bytes_peeked];
     let data_str = String::from_utf8_lossy(data);
     Ok(data_str.to_string())
