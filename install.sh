@@ -135,7 +135,7 @@ else
     show_progress "Compilando RustyManager, isso pode levar bastante tempo dependendo da maquina..."
     mkdir -p /opt/rustymanager
     mkdir -p /opt/rustymanager/ssl
-    git clone --branch "$SCRIPT_VERSION" --recurse-submodules --single-branch https://github.com/UlekBR/RustyManager.git /root/RustyManager > /dev/null 2>&1 || error_exit "Falha ao clonar RustyManager"
+    git clone --branch "$SCRIPT_VERSION" --recurse-submodules --single-branch https://github.com/adfastltda/RustyManager.git /root/RustyManager > /dev/null 2>&1 || error_exit "Falha ao clonar RustyManager"
 
     cd /root/RustyManager/
     mv -f ./Utils/ssl/cert.pem /opt/rustymanager/ssl/cert.pem > /dev/null 2>&1
