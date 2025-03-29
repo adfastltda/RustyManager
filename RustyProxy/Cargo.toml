@@ -3,4 +3,5 @@ name = "RustyProxy"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["io-util", "net", "macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["full"] } # "full" habilita tudo (net, io, time, sync, rt-multi-thread)
+clap = { version = "4", features = ["derive"] }
