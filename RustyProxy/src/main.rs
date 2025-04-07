@@ -15,7 +15,7 @@ async fn main() -> Result<(), Error> {
     Ok(())
 }
 
-async fn start_http(listener: TcpListener) {
+async_vol fn start_http(listener: TcpListener) {
     loop {
         match listener.accept().await {
             Ok((client_stream, addr)) => {
@@ -33,83 +33,86 @@ async fn start_http(listener: TcpListener) {
 async fn handle_client(mut client_stream: TcpStream) -> Result<(), Error> {
     let status = get_status();
 
-    // Responde ao primeiro pacote (ex.: "lock /Allow/")
+    // Responde ao primeiro pacote (ex.: "[rotate=...] /Allow/" ou "lock /Allow/")
     client_stream
         .write_all(format!("HTTP/1.1 101 {}\r\n\r\n", status).as_bytes())
         .await?;
 
-    // Lê o próximo pacote do cliente (ex.: "GET-CONTROL")
+    // Lê o buffer do cliente
     let mut buffer = vec![0; 1024];
     let bytes_read = client_stream.read(&mut buffer).await?;
-    let request = String::from_utf8_lossy(&buffer[..bytes_read]);
-    let request_upper = request.to_uppercase(); // Torna a comparação insensível a maiúsculas/minúsculas
-    println!("Recebido do cliente: {}", request); // Log para depuração
+    let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+    println!("Recebido do cliente: {}", request);
 
-    // Verifica se é uma requisição "GET-CONTROL" com upgrade para WebSocket
-    if request_upper.contains("GET-CONTROL") && request_upper.contains("UPGRADE: WEBSOCKET") {
-        println!("Detectado GET-CONTROL com Upgrade: Websocket");
-        // Responde com 101 Switching Protocols para aceitar o WebSocket
-        client_stream
-            .write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: Websocket\r\n\r\n")
-            .await?;
+    // Divide o buffer em requisições separadas (usando "\n\n" como delimitador)
+    let requests: Vec<&str> = request.split("\n\n").collect();
 
-        // Define o proxy para WebSocket (ajuste o endereço conforme necessário)
-        let addr_proxy = "0.0.0.0:1194";
-        println!("Conectando ao proxy WebSocket: {}", addr_proxy);
+    for req in requests {
+        let req_upper = req.to_uppercase();
+        println!("Processando requisição: {}", req);
 
-        // Conecta ao servidor de destino
-        let server_stream = TcpStream::connect(addr_proxy).await?;
-        println!("Conexão ao proxy WebSocket estabelecida");
+        // Verifica se é "GET-CONTROL" com upgrade para WebSocket
+        if req_upper.contains("GET-CONTROL") && req_upper.contains("UPGRADE: WEBSOCKET") {
+            println!("Detectado GET-CONTROL com Upgrade: Websocket");
+            client_stream
+                .write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: Websocket\r\n\r\n")
+                .await?;
 
-        // Divide os streams para encaminhamento bidirecional
-        let (client_read, client_write) = client_stream.into_split();
-        let (server_read, server_write) = server_stream.into_split();
+            let addr_proxy = "0.0.0.0:1194"; // Ajuste conforme necessário
+            println!("Conectando ao proxy WebSocket: {}", addr_proxy);
 
-        let client_read = Arc::new(Mutex::new(client_read));
-        let client_write = Arc::new(Mutex::new(client_write));
-        let server_read = Arc::new(Mutex::new(server_read));
-        let server_write = Arc::new(Mutex::new(server_write));
+            let server_stream = TcpStream::connect(addr_proxy).await?;
+            println!("Conexão ao proxy WebSocket estabelecida");
 
-        // Encaminha dados bidirecionalmente
-        let client_to_server = transfer_data(client_read.clone(), server_write);
-        let server_to_client = transfer_data(server_read, client_write);
+            let (client_read, client_write) = client_stream.into_split();
+            let (server_read, server_write) = server_stream.into_split();
 
-        tokio::try_join!(client_to_server, server_to_client)?;
-    } else {
-        println!("Requisição não é GET-CONTROL com WebSocket, seguindo lógica padrão");
-        // Lógica existente para outros casos (ex.: SSH)
-        client_stream
-            .write_all(format!("HTTP/1.1 200 {}\r\n\r\n", status).as_bytes())
-            .await?;
+            let client_read = Arc::new(Mutex::new(client_read));
+            let client_write = Arc::new(Mutex::new(client_write));
+            let server_read = Arc::new(Mutex::new(server_read));
+            let server_write = Arc::new(Mutex::new(server_write));
 
-        let mut addr_proxy = "0.0.0.0:22";
-        let result = timeout(Duration::from_secs(1), peek_stream(&mut client_stream)).await
-            .unwrap_or_else(|_| Ok(String::new()));
+            let client_to_server = transfer_data(client_read.clone(), server_write);
+            let server_to_client = transfer_data(server_read, client_write);
 
-        if let Ok(data) = result {
-            println!("Dados peeked: {}", data);
-            if data.contains("SSH") || data.is_empty() {
-                addr_proxy = "0.0.0.0:22";
-            } else {
-                addr_proxy = "0.0.0.0:1194";
-            }
+            tokio::try_join!(client_to_server, server_to_client)?;
+            return Ok(()); // Encerra após iniciar o WebSocket
         }
-
-        println!("Conectando ao proxy: {}", addr_proxy);
-        let server_stream = TcpStream::connect(addr_proxy).await?;
-        let (client_read, client_write) = client_stream.into_split();
-        let (server_read, server_write) = server_stream.into_split();
-
-        let client_read = Arc::new(Mutex::new(client_read));
-        let client_write = Arc::new(Mutex::new(client_write));
-        let server_read = Arc::new(Mutex::new(server_read));
-        let server_write = Arc::new(Mutex::new(server_write));
-
-        let client_to_server = transfer_data(client_read.clone(), server_write);
-        let server_to_client = transfer_data(server_read, client_write);
-
-        tokio::try_join!(client_to_server, server_to_client)?;
     }
+
+    // Se não for WebSocket, segue a lógica padrão
+    println!("Nenhum GET-CONTROL com WebSocket detectado, seguindo lógica padrão");
+    client_stream
+        .write_all(format!("HTTP/1.1 200 {}\r\n\r\n", status).as_bytes())
+        .await?;
+
+    let mut addr_proxy = "0.0.0.0:22";
+    let result = timeout(Duration::from_secs(1), peek_stream(&mut client_stream)).await
+        .unwrap_or_else(|_| Ok(String::new()));
+
+    if let Ok(data) = result {
+        println!("Dados peeked: {}", data);
+        if data.contains("SSH") || data.is_empty() {
+            addr_proxy = "0.0.0.0:22";
+        } else {
+            addr_proxy = "0.0.0.0:1194";
+        }
+    }
+
+    println!("Conectando ao proxy: {}", addr_proxy);
+    let server_stream = TcpStream::connect(addr_proxy).await?;
+    let (client_read, client_write) = client_stream.into_split();
+    let (server_read, server_write) = server_stream.into_split();
+
+    let client_read = Arc::new(Mutex::new(client_read));
+    let client_write = Arc::new(Mutex::new(client_write));
+    let server_read = Arc::new(Mutex::new(server_read));
+    let server_write = Arc::new(Mutex::new(server_write));
+
+    let client_to_server = transfer_data(client_read.clone(), server_write);
+    let server_to_client = transfer_data(server_read, client_write);
+
+    tokio::try_join!(client_to_server, server_to_client)?;
 
     Ok(())
 }
