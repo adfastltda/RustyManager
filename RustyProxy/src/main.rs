@@ -1,158 +1,159 @@
-use clap::Parser;
-use std::error::Error;
+use std::env;
+use std::io::Error;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::io::{self, AsyncWriteExt}; // io necessário para copy_bidirectional
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::timeout;
-
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Porta na qual o servidor proxy escutará
-    #[arg(long, default_value_t = 80)]
-    port: u16,
-
-    /// Mensagem de status a ser enviada no handshake inicial
-    #[arg(long, default_value = "@RustyManager")]
-    status: String,
-}
+use tokio::sync::Mutex;
+use tokio::time::{Duration, timeout};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let args = Args::parse();
-
-    let listener = TcpListener::bind(format!("[::]:{}", args.port)).await?;
-    println!("Iniciando serviço na porta: {}", args.port);
-
-    // Compartilha a string de status com segurança entre as tasks
-    let shared_status = Arc::new(args.status);
-
-    start_proxy(listener, shared_status).await; // Renomeado de start_http para clareza
+async fn main() -> Result<(), Error> {
+    let port = get_port();
+    let listener = TcpListener::bind(format!("[::]:{}", port)).await?;
+    println!("Iniciando serviço na porta: {}", port);
+    start_http(listener).await;
     Ok(())
 }
 
-async fn start_proxy(listener: TcpListener, status: Arc<String>) {
+async fn start_http(listener: TcpListener) {
     loop {
         match listener.accept().await {
             Ok((client_stream, addr)) => {
-                println!("Cliente conectado: {}", addr);
-                // Clona o Arc para a nova task
-                let status_clone = status.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_client(client_stream, status_clone).await {
-                        eprintln!("Erro ao processar cliente {}: {}", addr, e);
-                    } else {
-                        println!("Cliente desconectado: {}", addr);
+                    if let Err(e) = handle_client(client_stream).await {
+                        println!("Erro ao processar cliente {}: {}", addr, e);
                     }
                 });
             }
-            Err(e) => {
-                eprintln!("Erro ao aceitar conexão: {}", e);
+            Err(e) => println!("Erro ao aceitar conexão: {}", e),
+        }
+    }
+}
+
+async fn handle_client(mut client_stream: TcpStream) -> Result<(), Error> {
+    let status = get_status();
+
+    // Responde ao primeiro pacote (ex.: "unlock /Allow/")
+    client_stream
+        .write_all(format!("HTTP/1.1 101 {}\r\n\r\n", status).as_bytes())
+        .await?;
+
+    // Lê o próximo pacote do cliente (ex.: "GET-CONTROL")
+    let mut buffer = vec![0; 1024];
+    let bytes_read = client_stream.read(&mut buffer).await?;
+    let request = String::from_utf8_lossy(&buffer[..bytes_read]);
+
+    // Verifica se é uma requisição "GET-CONTROL" com upgrade para WebSocket
+    if request.contains("GET-CONTROL") && request.contains("Upgrade: Websocket") {
+        // Responde com 101 Switching Protocols para aceitar o WebSocket
+        client_stream
+            .write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: Websocket\r\n\r\n")
+            .await?;
+        
+        // Define o proxy para WebSocket (pode ser outro endereço, se necessário)
+        let addr_proxy = "0.0.0.0:1194"; // Exemplo: ajustável conforme sua necessidade
+
+        // Conecta ao servidor de destino
+        let server_stream = TcpStream::connect(addr_proxy).await?;
+
+        // Divide os streams para encaminhamento bidirecional
+        let (client_read, client_write) = client_stream.into_split();
+        let (server_read, server_write) = server_stream.into_split();
+
+        let client_read = Arc::new(Mutex::new(client_read));
+        let client_write = Arc::new(Mutex::new(client_write));
+        let server_read = Arc::new(Mutex::new(server_read));
+        let server_write = Arc::new(Mutex::new(server_write));
+
+        // Encaminha dados bidirecionalmente
+        let client_to_server = transfer_data(client_read.clone(), server_write);
+        let server_to_client = transfer_data(server_read, client_write);
+
+        tokio::try_join!(client_to_server, server_to_client)?;
+    } else {
+        // Lógica existente para outros casos (ex.: SSH)
+        client_stream
+            .write_all(format!("HTTP/1.1 200 {}\r\n\r\n", status).as_bytes())
+            .await?;
+
+        let mut addr_proxy = "0.0.0.0:22";
+        let result = timeout(Duration::from_secs(1), peek_stream(&mut client_stream)).await
+            .unwrap_or_else(|_| Ok(String::new()));
+
+        if let Ok(data) = result {
+            if data.contains("SSH") || data.is_empty() {
+                addr_proxy = "0.0.0.0:22";
+            } else {
+                addr_proxy = "0.0.0.0:1194";
             }
         }
+
+        let server_stream = TcpStream::connect(addr_proxy).await?;
+        let (client_read, client_write) = client_stream.into_split();
+        let (server_read, server_write) = server_stream.into_split();
+
+        let client_read = Arc::new(Mutex::new(client_read));
+        let client_write = Arc::new(Mutex::new(client_write));
+        let server_read = Arc::new(Mutex::new(server_read));
+        let server_write = Arc::new(Mutex::new(server_write));
+
+        let client_to_server = transfer_data(client_read.clone(), server_write);
+        let server_to_client = transfer_data(server_read, client_write);
+
+        tokio::try_join!(client_to_server, server_to_client)?;
     }
+
+    Ok(())
 }
 
-async fn handle_client(
-    mut client_stream: TcpStream,
-    status: Arc<String>,
-) -> Result<(), Box<dyn Error>> {
-    // 1. Enviar resposta inicial (simplificada)
-    //    O cliente precisa esperar por isso antes de enviar dados, ou ignorar.
-    client_stream
-        .write_all(format!("HTTP/1.1 101 {}\r\n\r\n", *status).as_bytes())
-        .await?;
-    client_stream.flush().await?; // Garante que a resposta foi enviada
+async fn transfer_data(
+    read_stream: Arc<Mutex<tokio::net::tcp::OwnedReadHalf>>,
+    write_stream: Arc<Mutex<tokio::net::tcp::OwnedWriteHalf>>,
+) -> Result<(), Error> {
+    let mut buffer = [0; 8192];
+    loop {
+        let bytes_read = {
+            let mut read_guard = read_stream.lock().await;
+            read_guard.read(&mut buffer).await?
+        };
 
-    // 2. Espiar (peek) os dados iniciais sem consumi-los
-    let addr_proxy: &str; // Usar &str para endereços fixos
-
-    // Define um timeout curto para o peek
-    const PEEK_TIMEOUT_SECS: u64 = 2;
-
-    let peek_result = timeout(
-        Duration::from_secs(PEEK_TIMEOUT_SECS),
-        peek_stream(&client_stream), // Passa referência imutável
-    )
-    .await;
-
-    let data_str = match peek_result {
-        Ok(Ok(data)) => {
-            println!("Dados iniciais espiados: {:?}", data); // Log para debug
-            data
+        if bytes_read == 0 {
+            break;
         }
-        Ok(Err(e)) => {
-            // Erro durante a operação de peek
-            eprintln!("Erro ao espiar dados do cliente: {}", e);
-            String::new() // Assume padrão (SSH) em caso de erro no peek
-        }
-        Err(_) => {
-            // Timeout ocorreu
-            println!(
-                "Timeout ({:?}s) ao esperar dados iniciais do cliente. Usando backend padrão.",
-                PEEK_TIMEOUT_SECS
-            );
-            String::new() // Assume padrão (SSH) em caso de timeout
-        }
-    };
 
-    // 3. Decidir o backend
-    //    Se contiver "SSH" (case-sensitive) ou se o peek falhou/timeout/vazio, usa SSH.
-    //    Caso contrário, assume OpenVPN.
-    if data_str.contains("SSH") || data_str.is_empty() {
-        addr_proxy = "127.0.0.1:22"; // Corrigido para localhost
-    } else {
-        addr_proxy = "127.0.0.1:1194"; // Corrigido para localhost
+        let mut write_guard = write_stream.lock().await;
+        write_guard.write_all(&buffer[..bytes_read]).await?;
     }
-
-    println!("Redirecionando para o backend: {}", addr_proxy);
-
-    // 4. Conectar ao backend
-    let server_stream_result = TcpStream::connect(addr_proxy).await;
-
-    let mut server_stream = match server_stream_result {
-        Ok(stream) => {
-            println!("Conectado ao backend com sucesso: {}", addr_proxy);
-            stream
-        }
-        Err(e) => {
-            eprintln!("Falha ao conectar ao backend {}: {}", addr_proxy, e);
-            // Opcional: Tentar enviar um erro para o cliente aqui?
-            // Por simplicidade, apenas fechamos a conexão do cliente retornando Ok.
-            return Ok(());
-        }
-    };
-
-    // 5. Transferir dados bidirecionalmente
-    //    Usa copy_bidirectional para eficiência e simplicidade.
-    //    Não precisamos mais de Arc<Mutex<...>> ou da função transfer_data.
-    match io::copy_bidirectional(&mut client_stream, &mut server_stream).await {
-        Ok((to_server, to_client)) => {
-            println!(
-                "Transferência concluída. Cliente -> Servidor: {} bytes, Servidor -> Cliente: {} bytes",
-                to_server, to_client
-            );
-        }
-        Err(e) => {
-            eprintln!("Erro durante a transferência de dados: {}", e);
-        }
-    }
-
-    Ok(()) // Indica que o tratamento deste cliente terminou (com ou sem erro de transferência)
+    Ok(())
 }
 
-/// Espia os dados iniciais de um stream sem consumi-los.
-async fn peek_stream(stream: &TcpStream) -> Result<String, io::Error> {
-    let mut peek_buffer = vec![0; 1024]; // Buffer razoável para dados iniciais
+async fn peek_stream(stream: &mut TcpStream) -> Result<String, Error> {
+    let mut peek_buffer = vec![0; 8192];
     let bytes_peeked = stream.peek(&mut peek_buffer).await?;
+    let data = &peek_buffer[..bytes_peeked];
+    Ok(String::from_utf8_lossy(data).to_string())
+}
 
-    if bytes_peeked == 0 {
-        // Cliente pode ter desconectado antes de enviar dados após o handshake inicial
-        return Ok(String::new());
+fn get_port() -> u16 {
+    let args: Vec<String> = env::args().collect();
+    let mut port = 80;
+
+    for i in 1..args.len() {
+        if args[i] == "--port" && i + 1 < args.len() {
+            port = args[i + 1].parse().unwrap_or(80);
+        }
     }
+    port
+}
 
-    // Converte apenas os bytes espiados para String (com perda se não for UTF-8 válido)
-    let data_str = String::from_utf8_lossy(&peek_buffer[..bytes_peeked]);
-    Ok(data_str.to_string())
+fn get_status() -> String {
+    let args: Vec<String> = env::args().collect();
+    let mut status = String::from("@RustyManager");
+
+    for i in 1..args.len() {
+        if args[i] == "--status" && i + 1 < args.len() {
+            status = args[i + 1].clone();
+        }
+    }
+    status
 }
