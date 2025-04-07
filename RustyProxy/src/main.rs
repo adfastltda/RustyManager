@@ -33,7 +33,7 @@ async fn start_http(listener: TcpListener) {
 async fn handle_client(mut client_stream: TcpStream) -> Result<(), Error> {
     let status = get_status();
 
-    // Responde ao primeiro pacote (ex.: "unlock /Allow/")
+    // Responde ao primeiro pacote (ex.: "lock /Allow/")
     client_stream
         .write_all(format!("HTTP/1.1 101 {}\r\n\r\n", status).as_bytes())
         .await?;
@@ -42,19 +42,24 @@ async fn handle_client(mut client_stream: TcpStream) -> Result<(), Error> {
     let mut buffer = vec![0; 1024];
     let bytes_read = client_stream.read(&mut buffer).await?;
     let request = String::from_utf8_lossy(&buffer[..bytes_read]);
+    let request_upper = request.to_uppercase(); // Torna a comparação insensível a maiúsculas/minúsculas
+    println!("Recebido do cliente: {}", request); // Log para depuração
 
     // Verifica se é uma requisição "GET-CONTROL" com upgrade para WebSocket
-    if request.contains("GET-CONTROL") && request.contains("Upgrade: Websocket") {
+    if request_upper.contains("GET-CONTROL") && request_upper.contains("UPGRADE: WEBSOCKET") {
+        println!("Detectado GET-CONTROL com Upgrade: Websocket");
         // Responde com 101 Switching Protocols para aceitar o WebSocket
         client_stream
             .write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: Websocket\r\n\r\n")
             .await?;
-        
-        // Define o proxy para WebSocket (pode ser outro endereço, se necessário)
-        let addr_proxy = "0.0.0.0:1194"; // Exemplo: ajustável conforme sua necessidade
+
+        // Define o proxy para WebSocket (ajuste o endereço conforme necessário)
+        let addr_proxy = "0.0.0.0:1194";
+        println!("Conectando ao proxy WebSocket: {}", addr_proxy);
 
         // Conecta ao servidor de destino
         let server_stream = TcpStream::connect(addr_proxy).await?;
+        println!("Conexão ao proxy WebSocket estabelecida");
 
         // Divide os streams para encaminhamento bidirecional
         let (client_read, client_write) = client_stream.into_split();
@@ -71,6 +76,7 @@ async fn handle_client(mut client_stream: TcpStream) -> Result<(), Error> {
 
         tokio::try_join!(client_to_server, server_to_client)?;
     } else {
+        println!("Requisição não é GET-CONTROL com WebSocket, seguindo lógica padrão");
         // Lógica existente para outros casos (ex.: SSH)
         client_stream
             .write_all(format!("HTTP/1.1 200 {}\r\n\r\n", status).as_bytes())
@@ -81,6 +87,7 @@ async fn handle_client(mut client_stream: TcpStream) -> Result<(), Error> {
             .unwrap_or_else(|_| Ok(String::new()));
 
         if let Ok(data) = result {
+            println!("Dados peeked: {}", data);
             if data.contains("SSH") || data.is_empty() {
                 addr_proxy = "0.0.0.0:22";
             } else {
@@ -88,6 +95,7 @@ async fn handle_client(mut client_stream: TcpStream) -> Result<(), Error> {
             }
         }
 
+        println!("Conectando ao proxy: {}", addr_proxy);
         let server_stream = TcpStream::connect(addr_proxy).await?;
         let (client_read, client_write) = client_stream.into_split();
         let (server_read, server_write) = server_stream.into_split();
@@ -118,6 +126,7 @@ async fn transfer_data(
         };
 
         if bytes_read == 0 {
+            println!("Conexão encerrada pelo cliente ou servidor");
             break;
         }
 
