@@ -80,7 +80,7 @@ else
 
     # ---->>>> Criando as colunas no banco de dados
     show_progress "Configurando o banco de dados..."
-    sqlite3 /opt/RustyManager/db "
+    sqlite3 /opt/RustyManager/rusty.db "
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY,
         login_type TEXT NOT NULL,

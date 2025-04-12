@@ -6,7 +6,7 @@ mod funcs;
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
-    let sqlite_conn = Connection::open("/opt/rustymanager/db").unwrap();
+    let sqlite_conn = Connection::open("/opt/rustymanager/rusty.db").unwrap();
 
     if args.len() >= 4 {
         let connection_arg = args.get(1).unwrap();
