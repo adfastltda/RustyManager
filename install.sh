@@ -123,7 +123,7 @@ else
     # ---->>>> Compilar BadVPN
     show_progress "Compilando BadVPN..."
     mkdir -p /root/RustyManager/BadVpn/badvpn/badvpn-build
-    cd /root/RustyManager/BadVpn/badvpn/badvpn-build
+    cd /root/RustyManager/BadVpn/udpgw
     cmake .. -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1 > /dev/null 2>&1 || error_exit "Falha ao configurar cmake para BadVPN"
     make > /dev/null 2>&1 || error_exit "Falha ao compilar BadVPN"
     mv udpgw/badvpn-udpgw /opt/RustyManager/badvpn
