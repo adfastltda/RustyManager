@@ -116,7 +116,7 @@ else
     cargo build --release --jobs $(nproc) > /dev/null 2>&1 || error_exit "Falha ao compilar RustyManager"
     mv ./target/release/SshScript /opt/RustyManager/manager
     mv ./target/release/CheckUser /opt/RustyManager/checkuser
-    mv ./target/release/RustyProxy /opt/RustyManager/rustyproxy
+    mv ./target/release/RustyProxy /opt/RustyManager/proxy
     mv ./target/release/ConnectionsManager /opt/RustyManager/connectionsmanager
     increment_step
 
