@@ -1,5 +1,10 @@
 cert = /etc/stunnel/cert.pem
 key = /etc/stunnel/key.pem
 client = no
-[stunnel]
-connect = 127.0.0.1:22
+socket = a:SO_REUSEADDR=1
+socket = l:TCP_NODELAY=1
+sslVersion = all
+
+[stunnel Port 443]
+connect = 0.0.0.0:22
+accept = 443
