@@ -7,7 +7,7 @@
 Para instalar o RustyManager, execute o seguinte comando no seu terminal:
 
 ```bash
-bash <(wget -qO- https://raw.githubusercontent.com/adfastltda/RustyManagerBETA/refs/heads/main/install.sh)
+bash <(wget -qO- https://raw.githubusercontent.com/adfastltda/RustyManager/refs/heads/main/install.sh)
 ```
 
 Após a instalação, você pode iniciar o gerenciador executando o comando:
